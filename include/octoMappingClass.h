@@ -34,7 +34,7 @@ class OctoMappingClass
     public:
     	OctoMappingClass();
 		void init(double resolution);
-		void updateLocalMap(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const Eigen::Isometry3d& pose_current);
+		void updateLocalMap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_in, const Eigen::Isometry3d& pose_current);
 		void updateGlobalMap(void);
 		octomap::ColorOcTree* getMap(void);
 		

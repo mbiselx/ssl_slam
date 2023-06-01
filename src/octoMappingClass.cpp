@@ -47,14 +47,14 @@ void OctoMappingClass::updateGlobalMap(void){
 }
 
 //update points to map 
-void OctoMappingClass::updateLocalMap(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const Eigen::Isometry3d& pose_current){
+void OctoMappingClass::updateLocalMap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_in, const Eigen::Isometry3d& pose_current){
 
 	//check for global map update
 	double displacement = std::sqrt((last_pose.translation()-pose_current.translation()).transpose() * (last_pose.translation()-pose_current.translation()));
 	if(displacement>MIN_MAP_UPDATE_DISPLACEMENT){
 
 		//update to local map
-		pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_temp(new pcl::PointCloud<pcl::PointXYZRGB>());
+		pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_temp(new pcl::PointCloud<pcl::PointXYZI>());
 		pcl::transformPointCloud(*pc_in, *transformed_temp, pose_current.cast<float>());
 
 		octomap::Pointcloud cloud_octo;
@@ -71,7 +71,8 @@ void OctoMappingClass::updateLocalMap(const pcl::PointCloud<pcl::PointXYZRGB>::P
 		  
 		  octomap::ColorOcTreeNode* node = map->search(transformed_temp->points[i].x,transformed_temp->points[i].y,transformed_temp->points[i].z);
            if (node)
-                node->setColor(transformed_temp->points[i].r, transformed_temp->points[i].g, transformed_temp->points[i].b);
+		   		node->setValue(transformed_temp->points[i].intensity);
+                // node->setColor(transformed_temp->points[i].r, transformed_temp->points[i].g, transformed_temp->points[i].b);
 
 		}
 

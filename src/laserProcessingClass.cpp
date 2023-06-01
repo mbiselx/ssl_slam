@@ -9,76 +9,89 @@ void LaserProcessingClass::init(lidar::Lidar lidar_param_in){
 
 }
 
-void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_out_edge, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_out_surf){
+void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_in, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_edge, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_surf){
 
-    std::vector<int> indices;
-    pcl::removeNaNFromPointCloud(*pc_in, indices);
+    // make sure the pointclouds are clear
+    pc_out_edge->clear();
+    pc_out_surf->clear();
 
-    //coordinate transform
-    for (int i = 0; i < (int) pc_in->points.size(); i++){
-        double new_x = pc_in->points[i].z;
-        double new_y = -pc_in->points[i].x;
-        double new_z = -pc_in->points[i].y;
-        pc_in->points[i].x = new_x;
-        pc_in->points[i].y = new_y;
-        pc_in->points[i].z = new_z;
+    // prepare sectors
+    int m =  (lidar_param.max_horizontal_angle - lidar_param.min_horizontal_angle)/lidar_param.horizontal_angle_resolution/2; 
+    int n =  (lidar_param.max_vertical_angle - lidar_param.min_vertical_angle)/lidar_param.vertical_angle_resolution/2; 
+    std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> laserCloudScans;
+    for (int h = 0; h < m; h++){
+        for (int v = 0; v < n; v++){
+            laserCloudScans.push_back(pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>()));
+        }
     }
 
-    std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> laserCloudScans;
-
-    double last_angle = atan2(pc_in->points[0].z,pc_in->points[0].y) * 180 / M_PI;
-    int count =0;
-    int point_size = pc_in->points.size()-1;
-    for (int i = 0; i < (int) pc_in->points.size(); i++)
+    // fill in sectors 
+    for (auto point = pc_in->points.begin(); point != pc_in->points.end(); point++)
     {
-        if(pc_in->points[i].z<-1.0||pc_in->points[i].z>1.0||pc_in->points[i].x<0.5 )
+        // calulate the distance to this point
+        double distance = sqrt(point->x*point->x + point->y*point->y + point->z*point->z);
+        
+        // skip points outside of the regions of interest
+        if(isnan(distance) || distance<lidar_param.min_distance || distance > lidar_param.max_distance )
             continue;
 
-        int scanID=0;
-        double distance = sqrt(pc_in->points[i].x * pc_in->points[i].x + pc_in->points[i].y * pc_in->points[i].y + pc_in->points[i].z * pc_in->points[i].z);
-        double angle = atan2(pc_in->points[i].x,pc_in->points[i].z) * 180 / M_PI;
-        count++;
+        // bin points into sectors
+        double azimuth = (double) atan2(point->y, point->x) * 180 / M_PI;
+        double elevation = asin(point->z/distance) * 180 / M_PI;
 
-        if(fabs(angle - last_angle)>0.05){
-            
-            if(count>100){
-                pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_temp(new pcl::PointCloud<pcl::PointXYZRGB>());
-                for(int k=0;k<count;k++){
-                    pc_temp->push_back(pc_in->points[i-count+k+1]);
-                    //pc_in->points[i-count+k+1].intensity=1.0;
-                }
-                laserCloudScans.push_back(pc_temp);
-            }
-            count =0;
-            last_angle = angle;
+
+        int h_bin = (int) ((azimuth - lidar_param.min_horizontal_angle) * m / (lidar_param.max_horizontal_angle - lidar_param.min_horizontal_angle));
+        if (h_bin < 0 || h_bin > m) {
+            ROS_ERROR_STREAM("BAD HBIN :" << h_bin << " / " << m << " ("  << azimuth << " / " << lidar_param.min_horizontal_angle << " / " << lidar_param.horizontal_angle_resolution << ")");
+            continue;
         }
+        int v_bin = (int) ((elevation - lidar_param.min_vertical_angle) * n / (lidar_param.max_vertical_angle - lidar_param.min_vertical_angle));
+        if (v_bin < 0 || v_bin > n) {
+            ROS_ERROR_STREAM("BAD VBIN :" << v_bin << " / " << n << " (" << elevation << " / " << lidar_param.min_vertical_angle << " / " << lidar_param.vertical_angle_resolution << ")");
+            continue;
+        }
+        // forgive smaller infractions
+        if (h_bin == m)
+            h_bin--;
+        if (v_bin == n)
+            v_bin--;         
 
+        // if OK, add the point to cloud
+        laserCloudScans[n*h_bin + v_bin]->push_back(*point);
     }
 
-    ROS_WARN_ONCE("total points array %d", laserCloudScans.size());
+    ROS_DEBUG_ONCE("[laser processing]: total sectors in array %ld", laserCloudScans.size());
 
-    for(int i = 0; i < laserCloudScans.size(); i++){
-        
+    for(auto sector_itr = laserCloudScans.begin(); sector_itr != laserCloudScans.end(); sector_itr++) {
         std::vector<Double2d> cloudCurvature; 
-        int total_points = laserCloudScans[i]->points.size()-10;
-        for(int j = 5; j < (int)laserCloudScans[i]->points.size() - 5; j++){
-            double diffX = laserCloudScans[i]->points[j - 5].x + laserCloudScans[i]->points[j - 4].x + laserCloudScans[i]->points[j - 3].x + laserCloudScans[i]->points[j - 2].x + laserCloudScans[i]->points[j - 1].x - 10 * laserCloudScans[i]->points[j].x + laserCloudScans[i]->points[j + 1].x + laserCloudScans[i]->points[j + 2].x + laserCloudScans[i]->points[j + 3].x + laserCloudScans[i]->points[j + 4].x + laserCloudScans[i]->points[j + 5].x;
-            double diffY = laserCloudScans[i]->points[j - 5].y + laserCloudScans[i]->points[j - 4].y + laserCloudScans[i]->points[j - 3].y + laserCloudScans[i]->points[j - 2].y + laserCloudScans[i]->points[j - 1].y - 10 * laserCloudScans[i]->points[j].y + laserCloudScans[i]->points[j + 1].y + laserCloudScans[i]->points[j + 2].y + laserCloudScans[i]->points[j + 3].y + laserCloudScans[i]->points[j + 4].y + laserCloudScans[i]->points[j + 5].y;
-            double diffZ = laserCloudScans[i]->points[j - 5].z + laserCloudScans[i]->points[j - 4].z + laserCloudScans[i]->points[j - 3].z + laserCloudScans[i]->points[j - 2].z + laserCloudScans[i]->points[j - 1].z - 10 * laserCloudScans[i]->points[j].z + laserCloudScans[i]->points[j + 1].z + laserCloudScans[i]->points[j + 2].z + laserCloudScans[i]->points[j + 3].z + laserCloudScans[i]->points[j + 4].z + laserCloudScans[i]->points[j + 5].z;
-            Double2d distance(j,diffX * diffX + diffY * diffY + diffZ * diffZ);
+        pcl::PointCloud<pcl::PointXYZI>::Ptr sector = *sector_itr;
+        for(int j = 5; j < (int)sector->points.size() - 5; j++){
+            double diffX = sector->points[j - 5].x + sector->points[j - 4].x + sector->points[j - 3].x + sector->points[j - 2].x + sector->points[j - 1].x - 10 * sector->points[j].x + sector->points[j + 1].x + sector->points[j + 2].x + sector->points[j + 3].x + sector->points[j + 4].x + sector->points[j + 5].x;
+            double diffY = sector->points[j - 5].y + sector->points[j - 4].y + sector->points[j - 3].y + sector->points[j - 2].y + sector->points[j - 1].y - 10 * sector->points[j].y + sector->points[j + 1].y + sector->points[j + 2].y + sector->points[j + 3].y + sector->points[j + 4].y + sector->points[j + 5].y;
+            double diffZ = sector->points[j - 5].z + sector->points[j - 4].z + sector->points[j - 3].z + sector->points[j - 2].z + sector->points[j - 1].z - 10 * sector->points[j].z + sector->points[j + 1].z + sector->points[j + 2].z + sector->points[j + 3].z + sector->points[j + 4].z + sector->points[j + 5].z;
+            Double2d distance(j, diffX * diffX + diffY * diffY + diffZ * diffZ);
             cloudCurvature.push_back(distance);
 
         }
-
-        featureExtractionFromSector(laserCloudScans[i],cloudCurvature, pc_out_edge, pc_out_surf);
-            
-    
+        featureExtractionFromSector(sector, cloudCurvature, pc_out_edge, pc_out_surf);
     }
+
+    // for(uint8_t i = 0; i < laserCloudScans.size(); i++){
+    //     std::vector<Double2d> cloudCurvature; 
+    //     for(int j = 5; j < (int)laserCloudScans[i]->points.size() - 5; j++){
+    //         double diffX = laserCloudScans[i]->points[j - 5].x + laserCloudScans[i]->points[j - 4].x + laserCloudScans[i]->points[j - 3].x + laserCloudScans[i]->points[j - 2].x + laserCloudScans[i]->points[j - 1].x - 10 * laserCloudScans[i]->points[j].x + laserCloudScans[i]->points[j + 1].x + laserCloudScans[i]->points[j + 2].x + laserCloudScans[i]->points[j + 3].x + laserCloudScans[i]->points[j + 4].x + laserCloudScans[i]->points[j + 5].x;
+    //         double diffY = laserCloudScans[i]->points[j - 5].y + laserCloudScans[i]->points[j - 4].y + laserCloudScans[i]->points[j - 3].y + laserCloudScans[i]->points[j - 2].y + laserCloudScans[i]->points[j - 1].y - 10 * laserCloudScans[i]->points[j].y + laserCloudScans[i]->points[j + 1].y + laserCloudScans[i]->points[j + 2].y + laserCloudScans[i]->points[j + 3].y + laserCloudScans[i]->points[j + 4].y + laserCloudScans[i]->points[j + 5].y;
+    //         double diffZ = laserCloudScans[i]->points[j - 5].z + laserCloudScans[i]->points[j - 4].z + laserCloudScans[i]->points[j - 3].z + laserCloudScans[i]->points[j - 2].z + laserCloudScans[i]->points[j - 1].z - 10 * laserCloudScans[i]->points[j].z + laserCloudScans[i]->points[j + 1].z + laserCloudScans[i]->points[j + 2].z + laserCloudScans[i]->points[j + 3].z + laserCloudScans[i]->points[j + 4].z + laserCloudScans[i]->points[j + 5].z;
+    //         Double2d distance(j, diffX * diffX + diffY * diffY + diffZ * diffZ);
+    //         cloudCurvature.push_back(distance);
+    //     }
+    //     featureExtractionFromSector(laserCloudScans[i], cloudCurvature, pc_out_edge, pc_out_surf);
+    // }
 
 }
 
 
-void LaserProcessingClass::featureExtractionFromSector(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, std::vector<Double2d>& cloudCurvature, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_out_edge, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_out_surf){
+void LaserProcessingClass::featureExtractionFromSector(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_in, std::vector<Double2d>& cloudCurvature, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_edge, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_surf){
 
     std::sort(cloudCurvature.begin(), cloudCurvature.end(), [](const Double2d & a, const Double2d & b)
     { 
